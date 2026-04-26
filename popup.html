@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChatGPT to Obsidian</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <h1>ChatGPT to Obsidian</h1>
+        <p id="status" role="status">Open a ChatGPT conversation, then export.</p>
+      </header>
+
+      <label>
+        Vault
+        <input id="vault" type="text" placeholder="Optional Obsidian vault name">
+      </label>
+
+      <label>
+        Folder
+        <input id="folder" type="text" placeholder="AI/ChatGPT">
+      </label>
+
+      <label>
+        Tags
+        <input id="tags" type="text" placeholder="ai/chatgpt, research">
+      </label>
+
+      <div class="actions">
+        <button id="refresh" type="button">Refresh</button>
+        <button id="download" type="button" disabled>Download MD</button>
+        <button id="openObsidian" type="button" disabled>Open in Obsidian</button>
+      </div>
+
+      <textarea id="preview" spellcheck="false" readonly></textarea>
+    </main>
+
+    <script src="src/markdown.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
