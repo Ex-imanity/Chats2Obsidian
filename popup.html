@@ -14,13 +14,11 @@
       </header>
 
       <label>
-        Vault
-        <input id="vault" type="text" placeholder="Optional Obsidian vault name">
-      </label>
-
-      <label>
-        Folder
-        <input id="folder" type="text" placeholder="AI/ChatGPT">
+        Obsidian Folder
+        <div class="folder-picker">
+          <span id="folderName">No folder selected</span>
+          <button id="chooseFolder" type="button">Choose...</button>
+        </div>
       </label>
 
       <label>
@@ -30,7 +28,7 @@
 
       <div class="actions">
         <button id="refresh" type="button">Refresh</button>
-        <button id="download" type="button" disabled>Download MD</button>
+        <button id="download" type="button" disabled>Save MD...</button>
         <button id="openObsidian" type="button" disabled>Open in Obsidian</button>
       </div>
 

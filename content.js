@@ -65,7 +65,7 @@ const ChatGPTToObsidianExtractor = (() => {
 
     walk(node, parts, false);
 
-    return cleanText(
+    return normalizeExtractedMarkdown(
       parts
         .join("")
         .replace(/\n{4,}/g, "\n\n\n")
@@ -90,16 +90,34 @@ const ChatGPTToObsidianExtractor = (() => {
       return;
     }
 
+    if (tag === "button" && !element.querySelector("img")) {
+      return;
+    }
+
     if (tag === "pre") {
-      const code = element.querySelector("code");
-      const language = languageFromCode(code);
-      const text = cleanText(code ? code.innerText : element.innerText);
-      parts.push(`\n\n\`\`\`${language}\n${text}\n\`\`\`\n\n`);
+      const block = extractCodeBlock(element);
+      if (block) {
+        parts.push(`\n\n${block}\n\n`);
+      }
+      return;
+    }
+
+    if (tag === "img") {
+      const source = element.currentSrc || element.src || element.getAttribute("src");
+      if (source) {
+        const alt = cleanText(element.alt || element.getAttribute("alt") || "image");
+        parts.push(`\n\n![${escapeMarkdownLabel(alt)}](${source})\n\n`);
+      }
       return;
     }
 
     if (tag === "br") {
       parts.push("\n");
+      return;
+    }
+
+    if (tag === "a" && element.querySelector("img")) {
+      Array.from(element.childNodes).forEach((child) => walk(child, parts, insidePre));
       return;
     }
 
@@ -129,7 +147,145 @@ const ChatGPTToObsidianExtractor = (() => {
     if (!code) return "";
     const className = code.className || "";
     const match = className.match(/language-([A-Za-z0-9_-]+)/);
-    return match ? match[1] : "";
+    if (match) return normalizeLanguageName(match[1]);
+
+    const attrLanguage =
+      code.getAttribute("data-language") ||
+      code.getAttribute("data-lang") ||
+      code.getAttribute("lang");
+    return normalizeLanguageName(attrLanguage || "");
+  }
+
+  function extractCodeBlock(pre) {
+    const code = pre.querySelector("code");
+    const source = code || pre;
+    const rawText = nodeText(source);
+    let text = cleanCodeText(rawText);
+    let language = languageFromCode(source) || languageFromCode(pre);
+
+    const inferred = extractLeadingLanguage(text);
+    if (inferred) {
+      if (!language) {
+        language = inferred.language;
+      }
+      text = inferred.text;
+    }
+
+    if (!text) {
+      return "";
+    }
+
+    const fence = codeFenceFor(text);
+    return `${fence}${language}\n${text}\n${fence}`;
+  }
+
+  function nodeText(node) {
+    if (!node) return "";
+    return node.textContent || node.innerText || "";
+  }
+
+  function cleanCodeText(value) {
+    return String(value || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/^\s*(Copy code|复制代码)\s*\n/i, "")
+      .trim();
+  }
+
+  function extractLeadingLanguage(value) {
+    const lines = String(value || "").split("\n");
+    if (lines.length < 2) return null;
+
+    const first = cleanText(lines[0]);
+    const language = normalizeLanguageName(first);
+    if (!language) return null;
+
+    return {
+      language,
+      text: lines.slice(1).join("\n").trim(),
+    };
+  }
+
+  function normalizeLanguageName(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    const aliases = {
+      "c++": "cpp",
+      "c#": "csharp",
+      "js": "js",
+      "javascript": "javascript",
+      "ts": "ts",
+      "typescript": "typescript",
+      "json": "json",
+      "bash": "bash",
+      "shell": "shell",
+      "sh": "sh",
+      "zsh": "zsh",
+      "python": "python",
+      "py": "python",
+      "java": "java",
+      "sql": "sql",
+      "yaml": "yaml",
+      "yml": "yaml",
+      "markdown": "markdown",
+      "md": "markdown",
+      "html": "html",
+      "xml": "xml",
+      "css": "css",
+      "go": "go",
+      "rust": "rust",
+      "php": "php",
+      "text": "text",
+      "plaintext": "text",
+    };
+
+    return aliases[normalized] || "";
+  }
+
+  function codeFenceFor(value) {
+    const matches = String(value || "").match(/`{3,}/g) || [];
+    const longest = matches.reduce((length, match) => Math.max(length, match.length), 2);
+    return "`".repeat(longest + 1);
+  }
+
+  function escapeMarkdownLabel(value) {
+    return String(value || "").replace(/[[\]\\]/g, "\\$&");
+  }
+
+  function normalizeExtractedMarkdown(markdown) {
+    const lines = cleanText(markdown).split("\n");
+    const normalized = [];
+    let insideFence = false;
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (isFenceLine(line)) {
+        insideFence = !insideFence;
+        normalized.push(line);
+        continue;
+      }
+
+      if (
+        !insideFence &&
+        line.trim() === "" &&
+        isListItem(lines[index - 1]) &&
+        isListItem(lines[index + 1])
+      ) {
+        continue;
+      }
+
+      normalized.push(line);
+    }
+
+    return cleanText(normalized.join("\n"));
+  }
+
+  function isListItem(line) {
+    return /^(\s*)(?:[-*+]|\d+[.)])\s+\S/.test(String(line || ""));
+  }
+
+  function isFenceLine(line) {
+    return /^`{3,}/.test(String(line || "").trim());
   }
 
   function cleanText(value) {
@@ -140,8 +296,12 @@ const ChatGPTToObsidianExtractor = (() => {
       .trim();
   }
 
-  return { extractConversation };
+  return { extractConversation, elementToMarkdown };
 })();
+
+if (typeof module === "object" && module.exports) {
+  module.exports = ChatGPTToObsidianExtractor;
+}
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && message.type === "CHATGPT_TO_OBSIDIAN_EXTRACT") {

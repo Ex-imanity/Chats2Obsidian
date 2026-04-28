@@ -1,23 +1,24 @@
-# Snapshot: 2026-04-26 23:10
+# Snapshot: 2026-04-29 00:04
 
 ## Context
-The project contains a local Chrome/Edge Manifest V3 extension that exports the current ChatGPT conversation to Obsidian-friendly Markdown. The initial implementation has been committed and pushed to `origin/main`.
+The project contains a local Chrome/Edge Manifest V3 extension that exports the current ChatGPT conversation to Obsidian-friendly Markdown. The latest UX goal is to expose only one destination setting: Obsidian Folder.
 
 ## Recent Progress
-- Created extension files: `manifest.json`, `content.js`, `popup.html`, `popup.css`, `popup.js`, `background.js`.
-- Created tested converter module: `src/markdown.js` with tests in `test/markdown.test.js`.
-- Created planning docs under `docs/plans/`.
-- Pushed commit `33457dd Add ChatGPT to Obsidian export extension` to `https://github.com/Ex-imanity/Chats2Obsidian.git`.
-- Initialized MRS under `.task-state/`.
-- Verified MRS health with `verify_mrs.py`; recovery is possible.
+- Removed the visible Vault field from the popup.
+- Kept one destination control: `Obsidian Folder` with a remembered directory picker.
+- Unified `Save MD...` and `Open in Obsidian`: both save Markdown to the selected folder, and `Open in Obsidian` opens the saved note after saving.
+- Updated README to explain the two buttons and the selected folder behavior.
 
 ## Current Focus
-MRS initialization and state synchronization.
+Single Obsidian Folder export model is implemented. Manual validation should reload the unpacked extension, choose the target Obsidian folder once, then verify both buttons save into that folder and `Open in Obsidian` opens the saved note.
 
 ## Blockers
-- None known.
+- File System Access exposes the selected directory handle and name, not a full vault-relative path. `obsidian://open` uses the selected folder name, so if Obsidian does not open the expected note, the user should first open the intended vault in Obsidian.
 
 ## Files Modified
+- `popup.html`
+- `popup.js`
+- `README.md`
 - `.task-state/task_state.md`
 - `.task-state/plan.md`
 - `.task-state/snapshot.md`
@@ -25,10 +26,10 @@ MRS initialization and state synchronization.
 - `.task-state/findings.md`
 - `.task-state/architecture.md`
 - `.task-state/decisions.md`
-- `.task-state/blockers.md`
-- `AGENTS.md`
 
 ## Next Session Should Know
 - `task_state.md` is the source of truth for current status and todos.
-- The initial extension implementation is already published on `origin/main`.
-- The project is complete for the first release; future work should start by reopening or creating a new task in `.task-state/task_state.md`.
+- User-facing destination is now only Obsidian Folder.
+- `Save MD...` saves Markdown and assets to the selected folder.
+- `Open in Obsidian` does the same save, then opens the saved note with `obsidian://open`.
+- Reload the unpacked browser extension before testing.
