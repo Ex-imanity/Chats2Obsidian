@@ -11,6 +11,7 @@ const state = {
 const DIRECTORY_HANDLE_DB = "chatgpt-to-obsidian";
 const DIRECTORY_HANDLE_STORE = "handles";
 const EXPORT_FOLDER_KEY = "exportFolder";
+let refreshVersion = 0;
 
 const elements = {
   status: document.getElementById("status"),
@@ -80,7 +81,11 @@ async function chooseExportFolder() {
 }
 
 async function refreshConversation() {
-  setStatus("Reading current tab...");
+  const version = ++refreshVersion;
+  state.conversation = null;
+  state.markdown = "";
+  elements.preview.value = "";
+  setStatus("Reading full conversation...");
   setEnabled(false);
 
   try {
@@ -90,6 +95,7 @@ async function refreshConversation() {
     }
 
     const response = await requestExtraction(tab.id);
+    if (version !== refreshVersion) return;
 
     if (!response || !response.ok) {
       throw new Error(response && response.error ? response.error : "Could not read the page.");
@@ -99,11 +105,19 @@ async function refreshConversation() {
       throw new Error("No conversation messages were found on this page.");
     }
 
+    const currentTab = await chrome.tabs.get(tab.id);
+    if (version !== refreshVersion) return;
+    if (conversationKey(tab.url) !== conversationKey(response.conversation.url) ||
+      conversationKey(tab.url) !== conversationKey(currentTab.url)) {
+      throw new Error("Conversation changed while reading. Refresh the export.");
+    }
+
     state.conversation = response.conversation;
     renderMarkdown();
     setStatus(`Ready: ${response.conversation.messages.length} turns found.`);
     setEnabled(true);
   } catch (error) {
+    if (version !== refreshVersion) return;
     state.conversation = null;
     state.markdown = "";
     elements.preview.value = "";
@@ -111,21 +125,30 @@ async function refreshConversation() {
   }
 }
 
-async function requestExtraction(tabId) {
-  try {
-    return await chrome.tabs.sendMessage(tabId, {
-      type: "CHATGPT_TO_OBSIDIAN_EXTRACT",
-    });
-  } catch (_error) {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content.js"],
-    });
+function conversationKey(url) {
+  const parsed = new URL(url);
+  const id = parsed.pathname.match(/\/c\/([^/]+)/)?.[1];
+  return `${parsed.origin}${id ? `/c/${id}` : parsed.pathname}`;
+}
 
-    return chrome.tabs.sendMessage(tabId, {
-      type: "CHATGPT_TO_OBSIDIAN_EXTRACT",
-    });
-  }
+async function requestExtraction(tabId) {
+  // Reinstall the current version safely, including on tabs opened before an
+  // extension update. Read it directly so stale message listeners cannot win.
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"],
+  });
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async () => {
+      try {
+        return { ok: true, conversation: await globalThis.__chats2obsidianExtractor.extractCompleteConversation() };
+      } catch (error) {
+        return { ok: false, error: error.message || String(error) };
+      }
+    },
+  });
+  return results[0]?.result;
 }
 
 function renderMarkdown() {
@@ -152,11 +175,7 @@ async function saveMarkdown() {
 
   try {
     const markdownPackage = await saveCurrentMarkdownPackage();
-    setStatus(
-      markdownPackage.attachments.length > 0
-        ? `Saved ${state.fileName} and ${markdownPackage.attachments.length} attachment(s).`
-        : `Saved ${state.fileName}.`
-    );
+    setStatus(savedPackageStatus(markdownPackage, false));
   } catch (error) {
     if (error && error.name === "AbortError") {
       setStatus("Save canceled.");
@@ -183,35 +202,50 @@ async function saveCurrentMarkdownPackage() {
 }
 
 async function buildMarkdownPackage() {
+  const markdown = state.markdown;
   const plan = markdownTools.createAttachmentPlan({
-    markdown: state.markdown,
+    markdown,
     noteFileName: state.fileName,
     attachmentsFolder: "assets",
   });
 
   if (plan.length === 0) {
     return {
-      markdown: state.markdown,
+      markdown,
       attachments: [],
+      failedAttachments: [],
     };
   }
 
   const attachments = [];
+  const failedAttachments = [];
   for (const item of plan) {
-    const blob = await fetchAttachmentBlob(item.sourceUrl);
-    const relativePath = replacePathExtension(item.relativePath, extensionFromMimeType(blob.type));
-    attachments.push({
-      ...item,
-      blob,
-      fileName: fileNameFromPath(relativePath),
-      relativePath,
-    });
+    try {
+      const blob = await fetchAttachmentBlob(item.sourceUrl);
+      const relativePath = replacePathExtension(item.relativePath, extensionFromMimeType(blob.type));
+      attachments.push({
+        ...item,
+        blob,
+        fileName: fileNameFromPath(relativePath),
+        relativePath,
+      });
+    } catch (error) {
+      failedAttachments.push({ sourceUrl: item.sourceUrl, error: error.message || String(error) });
+    }
   }
 
   return {
-    markdown: markdownTools.replaceMarkdownImagesWithEmbeds(state.markdown, attachments),
+    markdown: markdownTools.replaceMarkdownImagesWithEmbeds(markdown, attachments),
     attachments,
+    failedAttachments,
   };
+}
+
+function savedPackageStatus(markdownPackage, opened) {
+  const saved = markdownPackage.attachments.length;
+  const failed = markdownPackage.failedAttachments?.length || 0;
+  return `Saved ${state.fileName}${saved ? ` and ${saved} attachment(s)` : ""}${opened ? " and opened Obsidian" : ""}.` +
+    (failed ? ` ${failed} image(s) could not be downloaded; original links were kept.` : "");
 }
 
 async function fetchAttachmentBlob(sourceUrl) {
@@ -308,11 +342,7 @@ async function openInObsidian() {
     setStatus("Saving to Obsidian folder...");
     const markdownPackage = await saveCurrentMarkdownPackage();
     await openSavedObsidianNote();
-    setStatus(
-      markdownPackage.attachments.length > 0
-        ? `Saved ${state.fileName}, ${markdownPackage.attachments.length} attachment(s), and opened Obsidian.`
-        : `Saved ${state.fileName} and opened Obsidian.`
-    );
+    setStatus(savedPackageStatus(markdownPackage, true));
   } catch (error) {
     if (error && error.name === "AbortError") {
       setStatus("Open canceled.");
