@@ -194,3 +194,31 @@ test("replaceMarkdownImagesWithEmbeds rewrites planned images as Obsidian embeds
     "![[assets/HTTP 报错-image-01.png]]\n\n![[assets/HTTP 报错-image-02.jpg]]"
   );
 });
+
+test("buildMarkdown preserves hard breaks and whitespace in long and tilde fences", () => {
+  const body = "line  \nnext\n\n````md\n```\n    indented  \n\n\n\n-\nexample\n```\n````\n\n~~~python\n  code  \n\n\n\n~~~";
+  assert.ok(buildMarkdown({ messages: [{ role: "assistant", text: body }] }).includes(body));
+});
+
+test("buildMarkdown keeps message headings below role sections", () => {
+  const markdown = buildMarkdown({ messages: [{ role: "assistant", text: "# Main\n\n## Sub\n\n```md\n# Example\n```" }] });
+  assert.match(markdown, /## Assistant\n\n### Main\n\n#### Sub/);
+  assert.match(markdown, /```md\n# Example\n```/);
+});
+
+test("normalizeTags preserves Chinese and prefixes numeric-only tags", () => {
+  assert.deepEqual(normalizeTags(["#测试/AI", "123", "AI测试"]), ["测试/AI", "tag-123", "AI测试"]);
+});
+
+test("buildMarkdown keeps multiline titles on one YAML and heading line", () => {
+  assert.match(buildMarkdown({ title: "One\nTwo", messages: [] }), /^---\ntitle: "One Two"/);
+});
+
+test("attachment export skips code examples and replaces only the actual image", () => {
+  const image = "![Demo](https://example.com/a%28b%29.png)";
+  const markdown = "````md\n```\n" + image + "\n```\n````\n\n`" + image + "`\n\n" + image;
+  const plan = createAttachmentPlan({ markdown, noteFileName: "Demo.md" });
+  assert.equal(plan.length, 1);
+  assert.equal(replaceMarkdownImagesWithEmbeds(markdown, plan),
+    markdown.slice(0, -image.length) + "![[assets/Demo-image-01.png]]");
+});

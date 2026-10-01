@@ -11,15 +11,15 @@
 
   function buildMarkdown(input) {
     const conversation = input || {};
-    const title = cleanText(conversation.title) || "ChatGPT Conversation";
+    const title = cleanText(conversation.title).replace(/\s+/g, " ") || "ChatGPT Conversation";
     const createdAt = conversation.createdAt || new Date().toISOString();
     const tags = normalizeTags(conversation.tags || DEFAULT_TAGS);
     const messages = (conversation.messages || [])
       .map((message) => ({
         role: normalizeRole(message.role),
-        text: normalizeMessageMarkdown(cleanText(message.text)),
+        text: normalizeMessageMarkdown(String(message.text || "").replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "")),
       }))
-      .filter((message) => message.text.length > 0);
+      .filter((message) => message.text.trim().length > 0);
 
     const lines = [
       "---",
@@ -75,37 +75,64 @@
     const attachmentsFolder = normalizeAttachmentFolder(values.attachmentsFolder || "assets");
     const noteBaseName = sanitizeAttachmentBase(values.noteFileName || "chatgpt-conversation.md");
     const plan = [];
-    const pattern = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
-    let match;
-
-    while ((match = pattern.exec(markdown)) !== null) {
-      const sourceUrl = match[2];
-      if (!isDownloadableImageSource(sourceUrl)) {
-        continue;
+    const offsets = [];
+    let offset = 0;
+    markdown.split("\n").forEach((line) => { offsets.push(offset); offset += line.length + 1; });
+    transformOutsideCode(markdown, (line, lineIndex) => {
+      const pattern = /!\[((?:\\.|[^\]\\])*)\]\(([^)\s]+)\)/g;
+      const searchable = maskInlineCode(line);
+      let match;
+      while ((match = pattern.exec(searchable)) !== null) {
+        const sourceUrl = match[2];
+        if (!isDownloadableImageSource(sourceUrl)) continue;
+        const index = plan.length + 1;
+        const extension = imageExtensionFromSource(sourceUrl);
+        const fileName = `${noteBaseName}-image-${String(index).padStart(2, "0")}${extension}`;
+        const relativePath = attachmentsFolder ? `${attachmentsFolder}/${fileName}` : fileName;
+        plan.push({
+          alt: match[1],
+          markdown: match[0],
+          sourceUrl,
+          fileName,
+          relativePath,
+          start: offsets[lineIndex] + match.index,
+          end: offsets[lineIndex] + match.index + match[0].length,
+        });
       }
-
-      const index = plan.length + 1;
-      const extension = imageExtensionFromSource(sourceUrl);
-      const fileName = `${noteBaseName}-image-${String(index).padStart(2, "0")}${extension}`;
-      const relativePath = attachmentsFolder ? `${attachmentsFolder}/${fileName}` : fileName;
-
-      plan.push({
-        alt: match[1],
-        markdown: match[0],
-        sourceUrl,
-        fileName,
-        relativePath,
-      });
-    }
+      return line;
+    });
 
     return plan;
   }
 
+  function maskInlineCode(line) {
+    const runs = Array.from(line.matchAll(/`+/g));
+    let masked = line;
+    for (let i = 0; i < runs.length; i += 1) {
+      const open = runs[i];
+      if (line[open.index - 1] === "\\") continue;
+      const closeIndex = runs.findIndex((run, j) => j > i && run[0].length === open[0].length);
+      if (closeIndex < 0) continue;
+      const end = runs[closeIndex].index + runs[closeIndex][0].length;
+      masked = masked.slice(0, open.index) + " ".repeat(end - open.index) + masked.slice(end);
+      i = closeIndex;
+    }
+    return masked;
+  }
+
   function replaceMarkdownImagesWithEmbeds(markdown, attachmentPlan) {
-    return (attachmentPlan || []).reduce(
-      (output, item) => output.replace(item.markdown, `![[${item.relativePath}]]`),
-      String(markdown || "")
-    );
+    let output = String(markdown || "");
+    // Replace from the end so saved source offsets remain valid, including when
+    // the same image syntax occurs earlier inside a code example.
+    [...(attachmentPlan || [])].reverse().forEach((item) => {
+      const embed = `![[${item.relativePath}]]`;
+      if (Number.isInteger(item.start) && Number.isInteger(item.end)) {
+        if (output.slice(item.start, item.end) === item.markdown) {
+          output = output.slice(0, item.start) + embed + output.slice(item.end);
+        }
+      } else output = output.replace(item.markdown, embed);
+    });
+    return output;
   }
 
   function normalizeTags(tags) {
@@ -114,11 +141,12 @@
       .map((tag) =>
         tag
           .replace(/\s+/g, "-")
-          .replace(/[^A-Za-z0-9/_-]/g, "-")
+          .replace(/[^\p{L}\p{M}\p{N}/_-]/gu, "-")
           .replace(/-+/g, "-")
           .replace(/^[-/]+|[-/]+$/g, "")
       )
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((tag) => /^\p{N}+$/u.test(tag) ? `tag-${tag}` : tag);
 
     return normalized.length > 0 ? Array.from(new Set(normalized)) : DEFAULT_TAGS;
   }
@@ -225,7 +253,7 @@
   }
 
   function yamlString(value) {
-    return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    return JSON.stringify(String(value));
   }
 
   function cleanText(value) {
@@ -236,106 +264,57 @@
       .trim();
   }
 
+  // A closing fence must use the opening marker and at least its length.
+  // Shorter example fences inside a Markdown code block are ordinary code.
+  function transformOutsideCode(markdown, transform, onCode = () => {}) {
+    let fence = null;
+    const lines = String(markdown || "").split("\n");
+    return lines.map((line, index) => {
+      const match = line.match(/^(?:\s*> ?)*[ \t]*(`{3,}|~{3,})(.*)$/);
+      if (match && (!fence || (match[1][0] === fence[0] && match[1].length >= fence.length && !match[2].trim()))) {
+        fence = fence ? null : match[1];
+        onCode();
+        return line;
+      }
+      if (fence) {
+        onCode();
+        return line;
+      }
+      return transform(line, index, lines);
+    }).filter((line) => line !== null).join("\n");
+  }
+
   function normalizeMessageMarkdown(markdown) {
-    return normalizeTightListSpacing(normalizeSplitListItems(markdown));
-  }
-
-  function normalizeSplitListItems(markdown) {
-    const lines = String(markdown || "").split("\n");
-    const normalized = [];
-    let insideFence = false;
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index];
-      if (isFenceLine(line)) {
-        insideFence = !insideFence;
-        normalized.push(line);
-        continue;
+    const repaired = transformOutsideCode(markdown, (line, index, lines) => {
+      const marker = line.match(/^(\s*)([-*+]|\d+[.)])\s*$/);
+      const next = lines[index + 1];
+      if (marker && next && next.trim() && !/^\s*(?:`{3,}|~{3,}|#|>)/.test(next)) {
+        lines[index + 1] = "";
+        return `${marker[1]}${marker[2]} ${next.trimStart()}`;
       }
-
-      const markerMatch = line.match(/^(\s*)([-*+]|\d+[.)])\s*$/);
-      const nextLine = lines[index + 1];
-
-      if (!insideFence && markerMatch && nextLine && nextLine.trim().length > 0) {
-        normalized.push(`${markerMatch[1]}${markerMatch[2]} ${nextLine.trimStart()}`);
-        index += 1;
-        continue;
-      }
-
-      normalized.push(line);
-    }
-
-    return normalized.join("\n");
-  }
-
-  function normalizeTightListSpacing(markdown) {
-    const lines = String(markdown || "").split("\n");
-    const normalized = [];
-    let insideFence = false;
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index];
-      if (isFenceLine(line)) {
-        insideFence = !insideFence;
-        normalized.push(line);
-        continue;
-      }
-
-      if (
-        !insideFence &&
-        line.trim() === "" &&
-        isListItem(lines[index - 1]) &&
-        isListItem(lines[index + 1])
-      ) {
-        continue;
-      }
-
-      normalized.push(line);
-    }
-
-    return normalized.join("\n");
+      return line;
+    });
+    const headings = transformOutsideCode(repaired, (line) => line.replace(
+      /^(#{1,6})(?=\s)/, (_, hashes) => "#".repeat(Math.min(6, hashes.length + 2))
+    ));
+    return collapseExcessBlankLinesOutsideCode(headings, true);
   }
 
   function isListItem(line) {
     return /^(\s*)(?:[-*+]|\d+[.)])\s+\S/.test(String(line || ""));
   }
 
-  function isFenceLine(line) {
-    return /^```/.test(String(line || "").trim());
-  }
-
-  function collapseExcessBlankLinesOutsideCode(markdown) {
-    const lines = String(markdown || "").split("\n");
-    const collapsed = [];
-    let insideFence = false;
+  function collapseExcessBlankLinesOutsideCode(markdown, tightenLists = false) {
     let blankLines = 0;
-
-    lines.forEach((line) => {
-      if (isFenceLine(line)) {
-        insideFence = !insideFence;
-        blankLines = 0;
-        collapsed.push(line);
-        return;
-      }
-
-      if (insideFence) {
-        collapsed.push(line);
-        return;
-      }
-
-      if (line.trim() === "") {
+    return transformOutsideCode(markdown, (line, index, lines) => {
+      if (!line.trim()) {
+        if (tightenLists && isListItem(lines[index - 1]) && isListItem(lines[index + 1])) return null;
         blankLines += 1;
-        if (blankLines <= 1) {
-          collapsed.push(line);
-        }
-        return;
+        return blankLines <= 1 ? "" : null;
       }
-
       blankLines = 0;
-      collapsed.push(line);
-    });
-
-    return collapsed.join("\n");
+      return line;
+    }, () => { blankLines = 0; });
   }
 
   return {
